@@ -1,0 +1,24 @@
+{# =====================================================
+   TEMPLATE: home.html
+   -----------------------------------------------------
+   Minimal admin dashboard without hotspot
+===================================================== #}
+
+<h1>Admin Dashboard</h1>
+
+<p>
+    Admin status:
+    {% if is_admin %}
+        ✅ You are admin
+    {% else %}
+        ❌ Not admin
+    {% endif %}
+</p>
+
+<p>
+    Current network: {{ current_network }}
+</p>
+
+<form method="GET" action="/logout">
+    <button>Logout</button>
+</form>

@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>File Server - File Management</title>
+    <!-- LOCAL CSS - No Bootstrap CDN -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/minimal.css') }}">
+    <link rel="icon" href="data:;base64,=">
+    
+    <!-- TEMPLATE DEBUG: Remove after stability confirmed -->
+    <script>
+    console.log('=== TEMPLATE DEBUG ===');
+    console.log('Files count:', {{ files | length }});
+    console.log('Is admin:', {{ is_admin | lower }});
+    console.log('Current user ID:', '{{ current_user_id }}');
+    {% for f in files %}
+    console.log('File {{ loop.index }}:', {
+        folder: '{{ f.folder | default("unknown") }}',
+        saved_name: '{{ f.saved_name | default("unknown") }}', 
+        original_name: '{{ f.original_name | default(f.saved_name) | default("unknown") }}',
+        size: {{ f.size | default(0) }},
+        uploaded_at: '{{ f.uploaded_at | default("unknown") }}',
+        uploader_id: '{{ f.uploader_id | default("unknown") }}'
+    });
+    {% endfor %}
+    </script>
+</head>
+<body class="p-4">
+
+<div class="container">
+    <h1>File Server</h1>
+
+    <!-- Connection Status Indicator -->
+    <div class="alert alert-info d-flex justify-content-between align-items-center">
+        <div>
+            <span id="connection-status" class="connection-status connection-good"></span>
+            <span id="connection-text">Connection: Stable</span>
+        </div>
+        <div>
+            <span id="active-users-count">Active Users: {{ active_users|length }}</span>
+        </div>
+    </div>
+
+    <p>Logged in as {% if is_admin %}👑 Admin{% else %}👤 User{% endif %} | 
+       <a href="{{ url_for('home') }}">Upload Files</a> | 
+       <a href="{{ url_for('logout') }}">Logout</a>
+    </p>
+
+    <!-- DOWNLOAD PROGRESS AREA -->
+    <div class="download-progress" id="download-progress" style="display: none;">
+        <h5>📥 Download Progress</h5>
+        <div class="d-flex justify-content-between mb-2">
+            <span id="download-file-name">Preparing download...</span>
+            <span id="download-percent">0%</span>
+        </div>
+        <div class="progress" style="height: 15px;">
+            <div id="download-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" 
+                 role="progressbar" style="width: 0%"></div>
+        </div>
+        <div class="text-center mt-2">
+            <span id="download-stats">0 B / 0 B</span>
+            <span id="download-speed" class="speed-indicator"></span>
+        </div>
+    </div>
+
+    <!-- BULK ACTIONS PANEL -->
+    <div class="bulk-actions">
+        <div class="row align-items-center">
+            <div class="col-md-6">
+                <strong>Bulk Operations:</strong>
+                <span id="selected-count" class="badge bg-primary">0 files selected</span>
+                <span id="total-count" class="badge bg-secondary">{{ files|length }} total visible</span>
+            </div>
+            <div class="col-md-6 text-end">
+                <button type="button" class="btn btn-success btn-sm" onclick="selectAllFiles()">Select All Visible</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="clearSelection()">Clear Selection</button>
+            </div>
+        </div>
+
+        <div class="mt-2">
+            <!-- DOWNLOAD SELECTED -->
+            <button type="button" class="btn btn-primary" id="download-selected-btn" onclick="downloadSelectedFiles()">
+                📥 Download Selected (<span id="download-count">0</span>)
+            </button>
+
+            <!-- DELETE SELECTED -->
+            {% if is_admin %}
+            <button type="button" class="btn btn-danger" id="admin-delete-selected-btn" onclick="deleteSelectedFiles('admin')">
+                🗑️ Delete Selected (<span id="admin-delete-count">0</span>)
+            </button>
+            {% else %}
+            <button type="button" class="btn btn-danger" id="user-delete-selected-btn" onclick="deleteSelectedFiles('user')">
+                🗑️ Delete Selected (<span id="user-delete-count">0</span>)
+            </button>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- FILE TABLE -->
+    <div class="table-responsive">
+        <table class="table table-striped" id="files-table">
+            <thead>
+                <tr>
+                    <th width="50px">
+                        <input type="checkbox" id="select-all-checkbox" onchange="toggleSelectAll(this)">
+                    </th>
+                    <th>Folder</th>
+                    <th>Saved Name</th>
+                    <th>Original Name</th>
+                    <th>Size</th>
+                    <th>Uploaded At</th>
+                    <th>Uploader</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for f in files %}
+                <tr class="file-row" 
+                    data-file-folder="{{ f.folder | default('public') }}" 
+                    data-file-owner="{{ f.uploader_id | default('unknown') }}" 
+                    data-file-name="{{ f.saved_name | default('unknown_file') }}" 
+                    data-file-size="{{ f.size | default(0) }}"
+                    data-can-delete="{% if is_admin or f.uploader_id == current_user_id %}true{% else %}false{% endif %}">
+                    <td>
+                        <input type="checkbox" class="file-checkbox" 
+                               value="{{ f.folder | default('public') }}:{{ f.saved_name | default('unknown') }}" 
+                               onchange="updateBulkActions()"
+                               {% if f.folder == 'private' and f.uploader_id != current_user_id and not is_admin %}disabled{% endif %}>
+                    </td>
+                    <td>
+                        {{ f.folder | default('public') }}
+                        {% if f.folder == 'private' and f.uploader_id == current_user_id %}
+                            <span class="badge bg-warning permission-badge">Your Private</span>
+                        {% elif f.folder == 'private' %}
+                            <span class="badge bg-secondary permission-badge">Private</span>
+                        {% else %}
+                            <span class="badge bg-success permission-badge">Public</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ f.saved_name | default('Unknown') }}</td>
+                    <td>{{ f.original_name | default(f.saved_name) | default('Unknown') }}</td>
+                    
+                    <!-- SAFE: File size with validation -->
+                    <td class="file-size-cell" data-size-bytes="{{ f.size | default(0) }}">
+                        {{ (f.size | default(0) | filesizeformat) if f.size else 'Unknown' }}
+                    </td>
+                    
+                    <td>{{ f.uploaded_at[:16] if f.uploaded_at and f.uploaded_at is string else 'Unknown' }}</td>
+                    <td>
+                        {% if f.uploader_id == current_user_id %}
+                            <span class="user-online">You</span>
+                        {% else %}
+                            <span class="user-offline">
+                                User{{ f.uploader_id[-4:] if f.uploader_id and f.uploader_id is string else 'Unknown' }}
+                            </span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <!-- SAFE: Individual Delete with validation -->
+                        {% if is_admin or f.uploader_id == current_user_id %}
+                        <button type="button" class="btn btn-sm btn-danger delete-btn" 
+                                onclick="deleteSingleFile('{{ f.folder | default('public') }}', 
+                                                         '{{ f.saved_name | default('') }}', 
+                                                         '{{ f.original_name | default(f.saved_name) | default('') }}')">
+                            🗑️ Delete
+                        </button>
+                        {% endif %}
+                        
+                        <!-- SAFE: Download button with validation -->
+                        <button type="button" class="btn btn-sm btn-primary delete-btn" 
+                                onclick="downloadSingleFile('{{ f.folder | default('public') }}', 
+                                                           '{{ f.saved_name | default('') }}', 
+                                                           '{{ f.original_name | default(f.saved_name) | default('') }}', 
+                                                           {{ f.size | default(0) }})">
+                            📥 Download
+                        </button>
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if files|length == 0 %}
+    <div class="alert alert-info text-center">
+        <h4>📁 No Files Uploaded Yet</h4>
+        <p>Upload some files to get started!</p>
+        <a href="{{ url_for('home') }}" class="btn btn-primary">Go to Upload</a>
+    </div>
+    {% endif %}
+
+    <!-- GLOBAL ACTIONS -->
+    <div class="mt-4">
+        {% if is_admin %}
+        <button type="button" class="btn btn-outline-danger" onclick="deleteAllFiles()">
+            🗑️ Delete All Files
+        </button>
+        {% endif %}
+
+        <button type="button" class="btn btn-outline-success" onclick="downloadAllFiles()">
+            📥 Download All Visible Files
+        </button>
+
+        <a href="{{ url_for('home') }}" class="btn btn-secondary">📤 Back to Upload</a>
+    </div>
+
+    <!-- USER MANAGEMENT (Admin Only) -->
+    {% if is_admin %}
+    <hr>
+    <div class="card">
+        <div class="card-header bg-primary text-white">
+            <h4 class="mb-0">👥 Active Users Management</h4>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>User ID</th>
+                            <th>IP Address</th>
+                            <th>Last Active</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="active-users-body">
+                    {% for uid, info in active_users.items() %}
+                        <tr>
+                            <td><code>{{ uid[:8] }}...</code></td>
+                            <td>{{ info.ip }}</td>
+                            <td>{{ info.last_seen[:19] if info.last_seen else 'Unknown' }}</td>
+                            <td>
+                                {% if info.is_admin %}
+                                    <span class="badge bg-danger">👑 Admin</span>
+                                {% else %}
+                                    <span class="badge bg-success">👤 User</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if uid != session.user_id %}
+                                <button type="button" class="btn btn-warning btn-sm" 
+                                        onclick="kickUser('{{ uid }}', '{{ info.ip }}')">
+                                    🚪 Kick
+                                </button>
+                                {% else %}
+                                    <span class="text-muted">(You)</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            
+            <div class="mt-3">
+                <button class="btn btn-info btn-sm" onclick="refreshUserList()">🔄 Refresh User List</button>
+                <span class="text-muted ms-2">Last updated: <span id="last-updated">{{ now }}</span></span>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+</div>
+
+<!-- ========================================================================= -->
+<!-- 🛡️ CRASH-PROOF JAVASCRIPT - FULLY COMPATIBLE WITH SERVER -->
+<!-- ========================================================================= -->
+<script>
+// =========================================================================
+// GLOBAL ERROR HANDLER - PREVENTS COMPLETE PAGE FAILURE
+// =========================================================================
+window.addEventListener('error', function(e) {
+    console.error('Global error caught:', e.error);
+    // Prevent complete page failure
+    e.preventDefault();
+    return true;
+});
+
+// =========================================================================
+// CORE VARIABLES WITH SAFETY CHECKS
+// =========================================================================
+let selectedFiles = new Set();
+let currentDownload = null;
+let domCache = {};
+let userRefreshInterval = null;
+
+// =========================================================================
+// UTILITY FUNCTIONS WITH ERROR HANDLING
+// =========================================================================
+function formatFileSize(bytes) {
+    try {
+        if (bytes === 0 || bytes === undefined || bytes === null) return '0 B';
+        if (typeof bytes !== 'number') {
+            bytes = parseInt(bytes) || 0;
+        }
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    } catch (e) {
+        console.error('Error formatting file size:', e);
+        return 'Unknown';
+    }
+}
+
+function formatAllFileSizes() {
+    try {
+        const sizeCells = document.querySelectorAll('.file-size-cell');
+        sizeCells.forEach(cell => {
+            try {
+                const sizeBytes = parseInt(cell.getAttribute('data-size-bytes'));
+                if (!isNaN(sizeBytes) && sizeBytes >= 0) {
+                    cell.textContent = formatFileSize(sizeBytes);
+                } else {
+                    cell.textContent = 'Unknown';
+                }
+            } catch (e) {
+                console.error('Error formatting cell size:', e);
+                cell.textContent = 'Error';
+            }
+        });
+    } catch (e) {
+        console.error('Error in formatAllFileSizes:', e);
+    }
+}
+
+// =========================================================================
+// DOM CACHE INITIALIZATION - SAFE ELEMENT ACCESS
+// =========================================================================
+function initDomCache() {
+    try {
+        domCache.checkboxes = document.querySelectorAll('.file-checkbox');
+        domCache.selectAll = document.getElementById('select-all-checkbox');
+        domCache.selectedCount = document.getElementById('selected-count');
+        domCache.totalCount = document.getElementById('total-count');
+        domCache.downloadCount = document.getElementById('download-count');
+        
+        // Safe element access - these might not exist for all users
+        domCache.userDeleteCount = document.getElementById('user-delete-count');
+        domCache.adminDeleteCount = document.getElementById('admin-delete-count');
+        
+        console.log('DOM cache initialized successfully');
+    } catch (e) {
+        console.error('Error initializing DOM cache:', e);
+    }
+}
+
+// =========================================================================
+// SELECTION & BULK OPERATIONS - WITH ERROR HANDLING
+// =========================================================================
+function toggleSelectAll(checkbox) {
+    try {
+        if (!domCache.checkboxes) return;
+        
+        domCache.checkboxes.forEach(cb => {
+            try {
+                if (!cb.disabled) cb.checked = checkbox.checked;
+            } catch (e) {
+                console.error('Error toggling checkbox:', e);
+            }
+        });
+        updateBulkActions();
+    } catch (e) {
+        console.error('Error in toggleSelectAll:', e);
+    }
+}
+
+function selectAllFiles() {
+    try {
+        if (!domCache.checkboxes) return;
+        
+        domCache.checkboxes.forEach(cb => {
+            try {
+                if (!cb.disabled) cb.checked = true;
+            } catch (e) {
+                console.error('Error selecting checkbox:', e);
+            }
+        });
+        if (domCache.selectAll) domCache.selectAll.checked = true;
+        updateBulkActions();
+    } catch (e) {
+        console.error('Error in selectAllFiles:', e);
+    }
+}
+
+function clearSelection() {
+    try {
+        if (!domCache.checkboxes) return;
+        
+        domCache.checkboxes.forEach(cb => {
+            try {
+                cb.checked = false;
+            } catch (e) {
+                console.error('Error clearing checkbox:', e);
+            }
+        });
+        if (domCache.selectAll) domCache.selectAll.checked = false;
+        updateBulkActions();
+    } catch (e) {
+        console.error('Error in clearSelection:', e);
+    }
+}
+
+function updateBulkActions() {
+    try {
+        if (!domCache.checkboxes) return;
+        
+        const selected = Array.from(domCache.checkboxes).filter(cb => cb.checked);
+        const totalVisible = Array.from(domCache.checkboxes).filter(cb => !cb.disabled).length;
+        
+        // Safe text content updates
+        if (domCache.selectedCount) 
+            domCache.selectedCount.textContent = `${selected.length} files selected`;
+        if (domCache.totalCount) 
+            domCache.totalCount.textContent = `${totalVisible} total visible`;
+        if (domCache.downloadCount) 
+            domCache.downloadCount.textContent = selected.length;
+        
+        // User-specific delete counts with validation
+        let userDeletableCount = 0;
+        selected.forEach(cb => {
+            try {
+                const row = cb.closest('tr');
+                if (row && row.dataset.canDelete === 'true') {
+                    userDeletableCount++;
+                }
+            } catch (e) {
+                console.error('Error processing file row:', e);
+            }
+        });
+        
+        if (domCache.userDeleteCount) 
+            domCache.userDeleteCount.textContent = userDeletableCount;
+        if (domCache.adminDeleteCount) 
+            domCache.adminDeleteCount.textContent = selected.length;
+            
+    } catch (e) {
+        console.error('Error in updateBulkActions:', e);
+    }
+}
+
+// =========================================================================
+// DOWNLOAD OPERATIONS - WITH COMPREHENSIVE ERROR HANDLING
+// =========================================================================
+function downloadSingleFile(folder, filename, originalName, fileSize) {
+    try {
+        if (currentDownload) {
+            alert('Please wait for current download to complete');
+            return;
+        }
+
+        // Validate parameters
+        if (!folder || !filename) {
+            alert('Invalid file parameters');
+            return;
+        }
+
+        showDownloadProgress(originalName || filename, fileSize || 0);
+        
+        const downloadUrl = `/download/${folder}/${filename}`;
+        
+        fetch(downloadUrl)
+            .then(response => {
+                if (!response.ok) throw new Error('Download failed');
+                return response.blob();
+            })
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = originalName || filename;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                
+                hideDownloadProgress();
+                currentDownload = null;
+            })
+            .catch(error => {
+                console.error('Download error:', error);
+                alert('Download failed: ' + error.message);
+                hideDownloadProgress();
+                currentDownload = null;
+            });
+
+        simulateDownloadProgress(fileSize || 0);
+    } catch (e) {
+        console.error('Error in downloadSingleFile:', e);
+        alert('Download operation failed');
+        hideDownloadProgress();
+        currentDownload = null;
+    }
+}
+
+function downloadSelectedFiles() {
+    try {
+        const selected = document.querySelectorAll('.file-checkbox:checked');
+        if (selected.length === 0) {
+            alert('Please select at least one file to download');
+            return;
+        }
+
+        if (currentDownload) {
+            alert('Please wait for current download to complete');
+            return;
+        }
+
+        // Prepare form data
+        const formData = new FormData();
+        selected.forEach(checkbox => {
+            formData.append('files', checkbox.value);
+        });
+
+        showDownloadProgress(`ZIP (${selected.length} files)`, calculateTotalSize(selected));
+
+        // Submit form for ZIP download
+        fetch('/download_selected', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (!response.ok) throw new Error('ZIP download failed');
+            return response.blob();
+        })
+        .then(blob => {
+            // Create download link for ZIP
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = `files_download_${new Date().getTime()}.zip`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            
+            hideDownloadProgress();
+            currentDownload = null;
+        })
+        .catch(error => {
+            console.error('ZIP download error:', error);
+            alert('ZIP download failed: ' + error.message);
+            hideDownloadProgress();
+            currentDownload = null;
+        });
+
+        simulateDownloadProgress(calculateTotalSize(selected));
+    } catch (e) {
+        console.error('Error in downloadSelectedFiles:', e);
+        alert('Bulk download operation failed');
+        hideDownloadProgress();
+        currentDownload = null;
+    }
+}
+
+function downloadAllFiles() {
+    try {
+        const visibleCheckboxes = document.querySelectorAll('.file-checkbox:not(:disabled)');
+        if (visibleCheckboxes.length === 0) {
+            alert('No files available to download');
+            return;
+        }
+
+        // Select all visible files
+        visibleCheckboxes.forEach(cb => cb.checked = true);
+        updateBulkActions();
+        
+        // Trigger download
+        downloadSelectedFiles();
+    } catch (e) {
+        console.error('Error in downloadAllFiles:', e);
+        alert('Download all operation failed');
+    }
+}
+
+// =========================================================================
+// DELETE OPERATIONS - WITH ERROR HANDLING
+// =========================================================================
+function deleteSingleFile(folder, filename, originalName) {
+    try {
+        if (!confirm(`Delete "${originalName || filename}"?`)) return;
+
+        const formData = new FormData();
+        formData.append('files', `${folder}:${filename}`);
+
+        const url = {% if is_admin %}'/admin/delete_selected'{% else %}'/delete_selected'{% endif %};
+
+        fetch(url, {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (response.ok) {
+                location.reload(); // Refresh to show updated file list
+            } else {
+                alert('Delete failed');
+            }
+        })
+        .catch(error => {
+            console.error('Delete error:', error);
+            alert('Delete failed: ' + error.message);
+        });
+    } catch (e) {
+        console.error('Error in deleteSingleFile:', e);
+        alert('Delete operation failed');
+    }
+}
+
+function deleteSelectedFiles(userType) {
+    try {
+        const selected = document.querySelectorAll('.file-checkbox:checked');
+        if (selected.length === 0) {
+            alert('Please select at least one file to delete');
+            return;
+        }
+
+        let message = `Delete ${selected.length} selected file(s)?`;
+        if (userType === 'user') {
+            // Count only user's own files for user delete
+            let userOwnedCount = 0;
+            selected.forEach(cb => {
+                try {
+                    const row = cb.closest('tr');
+                    if (row && row.dataset.canDelete === 'true') {
+                        userOwnedCount++;
+                    }
+                } catch (e) {
+                    console.error('Error counting user files:', e);
+                }
+            });
+            message = `Delete ${userOwnedCount} of your file(s)?`;
+        }
+
+        if (!confirm(message)) return;
+
+        const formData = new FormData();
+        selected.forEach(checkbox => {
+            formData.append('files', checkbox.value);
+        });
+
+        const url = userType === 'admin' ? '/admin/delete_selected' : '/delete_selected';
+
+        fetch(url, {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (response.ok) {
+                location.reload(); // Refresh to show updated file list
+            } else {
+                alert('Delete failed');
+            }
+        })
+        .catch(error => {
+            console.error('Delete error:', error);
+            alert('Delete failed: ' + error.message);
+        });
+    } catch (e) {
+        console.error('Error in deleteSelectedFiles:', e);
+        alert('Bulk delete operation failed');
+    }
+}
+
+function deleteAllFiles() {
+    try {
+        if (!confirm('Are you sure you want to delete ALL files? This cannot be undone!')) return;
+
+        fetch('/admin/delete_all', {
+            method: 'POST'
+        })
+        .then(response => {
+            if (response.ok) {
+                location.reload();
+            } else {
+                alert('Delete all failed');
+            }
+        })
+        .catch(error => {
+            console.error('Delete all error:', error);
+            alert('Delete all failed: ' + error.message);
+        });
+    } catch (e) {
+        console.error('Error in deleteAllFiles:', e);
+        alert('Delete all operation failed');
+    }
+}
+
+// =========================================================================
+// PROGRESS TRACKING FUNCTIONS
+// =========================================================================
+function showDownloadProgress(fileName, totalSize) {
+    try {
+        currentDownload = {
+            fileName: fileName,
+            totalSize: totalSize,
+            startTime: Date.now(),
+            loaded: 0
+        };
+
+        const progressDiv = document.getElementById('download-progress');
+        const fileNameElement = document.getElementById('download-file-name');
+        const progressBar = document.getElementById('download-progress-bar');
+        const percentElement = document.getElementById('download-percent');
+        const statsElement = document.getElementById('download-stats');
+
+        if (progressDiv && fileNameElement && progressBar && percentElement && statsElement) {
+            fileNameElement.textContent = fileName;
+            progressBar.style.width = '0%';
+            percentElement.textContent = '0%';
+            statsElement.textContent = `0 B / ${formatFileSize(totalSize)}`;
+            progressDiv.style.display = 'block';
+        }
+    } catch (e) {
+        console.error('Error showing download progress:', e);
+    }
+}
+
+function updateDownloadProgress(loaded, total) {
+    try {
+        if (!currentDownload) return;
+
+        const percent = (loaded / total) * 100;
+        const progressBar = document.getElementById('download-progress-bar');
+        const percentElement = document.getElementById('download-percent');
+        const statsElement = document.getElementById('download-stats');
+        const speedElement = document.getElementById('download-speed');
+
+        if (progressBar) progressBar.style.width = percent + '%';
+        if (percentElement) percentElement.textContent = Math.round(percent) + '%';
+        if (statsElement) statsElement.textContent = `${formatFileSize(loaded)} / ${formatFileSize(total)}`;
+
+        // Calculate download speed
+        if (speedElement) {
+            const timeElapsed = (Date.now() - currentDownload.startTime) / 1000;
+            const downloadSpeed = loaded / timeElapsed;
+            speedElement.textContent = `Speed: ${formatFileSize(downloadSpeed)}/s`;
+        }
+    } catch (e) {
+        console.error('Error updating download progress:', e);
+    }
+}
+
+function hideDownloadProgress() {
+    try {
+        const progressDiv = document.getElementById('download-progress');
+        if (progressDiv) progressDiv.style.display = 'none';
+        currentDownload = null;
+    } catch (e) {
+        console.error('Error hiding download progress:', e);
+    }
+}
+
+function simulateDownloadProgress(totalSize) {
+    try {
+        // Simulate progress for demonstration
+        let loaded = 0;
+        const interval = setInterval(() => {
+            loaded += totalSize / 100; // Increment by 1%
+            if (loaded >= totalSize) {
+                loaded = totalSize;
+                clearInterval(interval);
+            }
+            updateDownloadProgress(loaded, totalSize);
+        }, 50);
+    } catch (e) {
+        console.error('Error simulating download progress:', e);
+    }
+}
+
+// =========================================================================
+// UTILITY FUNCTIONS
+// =========================================================================
+function calculateTotalSize(selectedCheckboxes) {
+    try {
+        let totalSize = 0;
+        selectedCheckboxes.forEach(checkbox => {
+            try {
+                const row = checkbox.closest('tr');
+                if (row) {
+                    totalSize += parseInt(row.dataset.fileSize) || 0;
+                }
+            } catch (e) {
+                console.error('Error calculating file size:', e);
+            }
+        });
+        return totalSize;
+    } catch (e) {
+        console.error('Error in calculateTotalSize:', e);
+        return 0;
+    }
+}
+
+// =========================================================================
+// USER MANAGEMENT FUNCTIONS (Admin Only)
+// =========================================================================
+function kickUser(userId, userIp) {
+    try {
+        if (!confirm(`Kick user ${userIp}?`)) return;
+
+        const formData = new FormData();
+        formData.append('user_id', userId);
+
+        fetch(`/admin/kick/${userId}`, {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (response.ok) {
+                location.reload();
+            } else {
+                alert('Kick failed');
+            }
+        })
+        .catch(error => {
+            console.error('Kick error:', error);
+            alert('Kick failed: ' + error.message);
+        });
+    } catch (e) {
+        console.error('Error in kickUser:', e);
+        alert('Kick operation failed');
+    }
+}
+
+function refreshUserList() {
+    try {
+        const lastUpdated = document.getElementById('last-updated');
+        const now = new Date().toLocaleTimeString();
+        if (lastUpdated) lastUpdated.textContent = now;
+        
+        const btn = event.target;
+        const originalText = btn.textContent;
+        btn.textContent = 'Refreshing...';
+        btn.disabled = true;
+        
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }, 1000);
+    } catch (e) {
+        console.error('Error in refreshUserList:', e);
+    }
+}
+
+function updateUserListTimestamp() {
+    try {
+        const now = new Date().toLocaleTimeString();
+        const lastUpdated = document.getElementById('last-updated');
+        if (lastUpdated) lastUpdated.textContent = now;
+    } catch (e) {
+        console.error('Error in updateUserListTimestamp:', e);
+    }
+}
+
+// =========================================================================
+// PAGE INITIALIZATION - SAFE & DEFERRED
+// =========================================================================
+document.addEventListener('DOMContentLoaded', function() {
+    try {
+        console.log('Initializing file manager page...');
+        
+        // PHASE 1: Critical rendering only
+        formatAllFileSizes();
+        initDomCache();
+        updateBulkActions();
+        
+        // PHASE 2: Defer non-essential (1 second delay)
+        setTimeout(() => {
+            try {
+                // Admin features only when needed
+                {% if is_admin %}
+                if (typeof updateUserListTimestamp === 'function') {
+                    updateUserListTimestamp();
+                }
+                // Auto-refresh user list every 60 seconds for admins
+                userRefreshInterval = setInterval(updateUserListTimestamp, 60000);
+                {% endif %}
+            } catch (e) {
+                console.error('Error in deferred initialization:', e);
+            }
+        }, 1000);
+        
+        console.log('Page initialization completed successfully');
+    } catch (e) {
+        console.error('Error during page initialization:', e);
+    }
+});
+
+// =========================================================================
+// CLEANUP ON PAGE UNLOAD
+// =========================================================================
+window.addEventListener('beforeunload', function() {
+    try {
+        if (userRefreshInterval) clearInterval(userRefreshInterval);
+    } catch (e) {
+        console.error('Error during cleanup:', e);
+    }
+});
+</script>
+
+</body>
+</html>

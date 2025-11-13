@@ -1,0 +1,282 @@
+File Server Recovery Script Documentation
+
+📋 SCRIPT OVERVIEW
+
+File: file_server_recovery.sh
+Purpose: Automated recovery of Steam Deck File Server hotspot functionality after SteamOS updates
+Created: For resolving post-update DNSMasq removal and service conflicts
+Risk Level: Low (only fixes specific, verified issues)
+
+---
+
+🎯 WHAT THIS SCRIPT DOES
+
+Primary Function:
+
+Restores file server hotspot capability after SteamOS updates remove critical dependencies and reset configurations.
+
+Specific Problems Fixed:
+
+1. DNSMasq Missing - SteamOS updates often remove the dnsmasq package required for hotspot DHCP
+2. systemd-resolved Conflict - Re-enabled service conflicts with NetworkManager's hotspot DHCP
+3. Stuck Processes - Orphaned file server processes holding port 5000
+4. NetworkManager State - Ensures clean service state for hotspot operation
+
+---
+
+🔧 WHY THESE FIXES ARE NEEDED
+
+SteamOS Update Impact:
+
+· DNSMasq Removal: Hotspot activation fails with "ip-config-unavailable" error
+· Service Reset: systemd-resolved gets re-enabled, blocking port 53 from dnsmasq
+· Configuration Wipe: Read-only filesystem resets break package installations
+
+Symptoms Without This Script:
+
+```
+❌ Hotspot activation failed
+❌ Hotspot setup failed, falling back to LAN
+❌ Devices can't obtain IP addresses from hotspot
+❌ Port 5000 conflicts preventing server startup
+```
+
+---
+
+🛠️ HOW THE SCRIPT WORKS
+
+Execution Flow:
+
+```
+1. Preflight Checks
+   │
+2. DNSMasq Installation Verification
+   │
+3. systemd-resolved Conflict Resolution
+   │
+4. Hotspot Profile Validation
+   │
+5. File Server Environment Check
+   │
+6. Process Cleanup & Port Clearing
+   │
+7. NetworkManager Restart
+   │
+8. Final System Status Report
+```
+
+Key Safety Features:
+
+· Dependency Validation: Checks command availability before execution
+· Root Prevention: Blocks execution as root user
+· Error Handling: Continues on non-critical failures
+· State Verification: Confirms actions were successful
+· Idempotent Design: Safe to run multiple times
+
+---
+
+🚀 COMMANDS & EXECUTION
+
+Script Location:
+
+```bash
+~/FileServer/file_server_recovery.sh
+```
+
+Making Script Executable:
+
+```bash
+chmod +x ~/FileServer/file_server_recovery.sh
+```
+
+Running the Script:
+
+```bash
+# Navigate to script directory
+cd ~/FileServer
+
+# Execute the recovery script
+./file_server_recovery.sh
+```
+
+Expected Password Prompts:
+
+The script will naturally prompt for your sudo password when needed for:
+
+· Package installation (pacman -S dnsmasq)
+· Service management (systemctl commands)
+· Process termination (pkill, kill commands)
+· Port scanning (ss, network inspection)
+
+Post-Recovery Server Startup:
+
+```bash
+# After script completes, start your file server:
+cd ~/FileServer
+sudo systemctl stop firewalld
+source venv/bin/activate
+python unified_server.py hotspot
+```
+
+---
+
+📊 SCRIPT OUTPUT EXPLANATION
+
+Normal Successful Output:
+
+```
+🔧 SteamOS File Server Recovery Script
+📋 Starting system state analysis...
+
+1. Checking DNSMasq...
+   ✅ DNSMasq present: dnsmasq 2.90-2
+
+2. Checking systemd-resolved conflict...
+   ✅ systemd-resolved not active
+
+3. Checking hotspot profile...
+   ✅ Hotspot profile exists
+   ✅ Hotspot SSID correct: DeckFileServer
+
+4. Checking file server environment...
+   ✅ Virtual environment exists
+   ✅ Flask dependencies available
+   ✅ Server files present
+
+5. Cleaning up stuck processes...
+   ✅ No stuck server processes found
+   ✅ Port 5000 is clear
+
+6. Restarting NetworkManager...
+   ✅ NetworkManager restarted
+
+🎯 RECOVERY ACTIONS COMPLETE
+```
+
+Recovery Scenario Output:
+
+```
+1. Checking DNSMasq...
+   ❌ DNSMasq missing - reinstalling...
+   ✅ DNSMasq installed successfully
+
+2. Checking systemd-resolved conflict...
+   ⚠️  systemd-resolved active - stopping and disabling...
+   ✅ systemd-resolved stopped and disabled
+
+5. Cleaning up stuck processes...
+   ⚠️  Found running server processes: 12345
+   ✅ Killed stuck server processes
+```
+
+---
+
+🔄 WHEN TO RUN THIS SCRIPT
+
+Trigger Events:
+
+· After any SteamOS system update
+· When hotspot mode stops working
+· When seeing "Hotspot activation failed" errors
+· After system reboots that break file server functionality
+
+Frequency:
+
+· Run once after each SteamOS update
+· As needed when hotspot functionality breaks
+· Safe to run multiple times if unsure
+
+---
+
+🔍 TROUBLESHOOTING
+
+Common Issues:
+
+Script won't run:
+
+```bash
+# Make executable if permission denied
+chmod +x file_server_recovery.sh
+```
+
+DNSMasq installation fails:
+
+```bash
+# Manual fallback
+steamos-readonly disable
+sudo pacman -S dnsmasq --noconfirm
+steamos-readonly enable
+```
+
+Port 5000 still blocked:
+
+```bash
+# Manual cleanup
+sudo pkill -f "unified_server.py"
+sudo ss -tulpn | grep 5000
+sudo kill -9 $(sudo lsof -t -i:5000)
+```
+
+Logging:
+
+· Script outputs to terminal (no log file)
+· Check server logs: tail -f ~/FileServer/unified_server.log
+· System logs: sudo journalctl -u NetworkManager
+
+---
+
+🎪 INTEGRATION WITH EXISTING WORKFLOW
+
+Current Startup Process:
+
+```bash
+cd ~/FileServer
+sudo systemctl stop firewalld
+pkill -f "unified_server.py" 2>/dev/null || true
+source venv/bin/activate
+python unified_server.py hotspot
+```
+
+Enhanced Post-Update Process:
+
+```bash
+# 1. Run recovery script after SteamOS updates
+./file_server_recovery.sh
+
+# 2. Then proceed with normal startup
+sudo systemctl stop firewalld
+source venv/bin/activate
+python unified_server.py hotspot
+```
+
+---
+
+📝 MAINTENANCE
+
+Configuration Variables (Edit if needed):
+
+```bash
+HOTSPOT_PROFILE_NAME="DeckFileServer"    # Your hotspot name
+HOTSPOT_SSID="DeckFileServer"           # Hotspot SSID
+FILE_SERVER_DIR="/home/deck/FileServer" # Your server location
+```
+
+Update Considerations:
+
+· Script designed for current SteamOS behavior
+· May need updates if SteamOS changes package management
+· Monitor for new conflict patterns after major updates
+
+---
+
+✅ SUCCESS VALIDATION
+
+After running the script and starting your server, verify:
+
+1. Hotspot activates (no "falling back to LAN" messages)
+2. Server starts on port 5000 (sudo ss -tulpn | grep 5000)
+3. Devices can connect to DeckFileServer WiFi
+4. Web interface accessible at http://10.42.0.1:5000
+5. File operations work (upload/download functional)
+
+This script encapsulates all the diagnostic knowledge and fixes we discovered through our forensic analysis, providing a single-command recovery solution for your file server project.

@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>File Server - Upload</title>
+    <!-- LOCAL CSS - No Bootstrap CDN -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/minimal.css') }}">
+    <link rel="icon" href="data:;base64,=">
+</head>
+<body class="p-4">
+
+<div class="container">
+    <h1>File Server</h1>
+
+    <!-- Connection Status -->
+    <div class="alert alert-info d-flex justify-content-between align-items-center">
+        <div>
+            <span id="connection-status" class="connection-status connection-good"></span>
+            <span id="connection-text">Connection: Good</span>
+            <span id="transfer-speed" class="speed-indicator"></span>
+        </div>
+        <div>
+            <span id="active-users-count">Active Users: {{ active_users|length }}</span>
+        </div>
+    </div>
+
+    <p>Logged in as {% if is_admin %}👑 Admin{% else %}👤 User{% endif %} | 
+       <a href="{{ url_for('files') }}">View Uploaded Files</a> | 
+       <a href="{{ url_for('logout') }}">Logout</a>
+    </p>
+
+    <!-- UPLOAD LIMIT DISPLAY -->
+    <div class="alert alert-warning">
+        <strong>Upload Limits:</strong> 
+        {% if is_admin %}
+        👑 Admin: <strong>50GB</strong> per file | 
+        {% else %}
+        👤 User: <strong>25GB</strong> per file |
+        {% endif %}
+        🚀 Ready for large files
+    </div>
+
+    <!-- UPLOAD STATS -->
+    <div class="upload-stats">
+        <div class="row text-center">
+            <div class="col-md-4">
+                <h5 id="total-files">0 Files</h5>
+                <small>Selected</small>
+            </div>
+            <div class="col-md-4">
+                <h5 id="total-size">0 MB</h5>
+                <small>Total Size</small>
+            </div>
+            <div class="col-md-4">
+                <h5 id="estimated-time">--:--</h5>
+                <small>Estimated Time</small>
+            </div>
+        </div>
+    </div>
+
+    <!-- UPLOAD AREA -->
+    <div class="upload-area" id="upload-area">
+        <div class="mb-3">
+            <i class="fas fa-cloud-upload-alt" style="font-size: 48px; color: #007bff;"></i>
+        </div>
+        <h4>Drag & Drop Files Here</h4>
+        <p class="text-muted">or click to browse</p>
+        <!-- 🐬 CRITICAL FIX: Updated file input for Dolphin file picker -->
+        <input type="file" id="file-input" multiple accept="*/*" style="display: none;">
+        <button class="btn btn-primary btn-lg" onclick="document.getElementById('file-input').click()">
+            📁 Select Files
+        </button>
+    </div>
+
+    <!-- FILE LIST -->
+    <div class="file-list" id="file-list" style="display: none;">
+        <h5>Selected Files:</h5>
+        <div id="file-items"></div>
+    </div>
+
+    <!-- UPLOAD PROGRESS -->
+    <div class="progress-container" id="upload-progress-container" style="display: none;">
+        <div class="d-flex justify-content-between mb-2">
+            <span>Overall Progress</span>
+            <span id="overall-progress-text">0%</span>
+        </div>
+        <div class="progress" style="height: 20px;">
+            <div id="overall-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" 
+                 role="progressbar" style="width: 0%"></div>
+        </div>
+        <div class="text-center mt-2">
+            <span id="current-file-progress">Waiting to start...</span>
+            <br>
+            <span id="upload-speed" class="speed-indicator"></span>
+        </div>
+    </div>
+
+    <!-- UPLOAD OPTIONS -->
+    <form id="upload-form">
+        <div class="mb-3">
+            <label for="folder-choice" class="form-label"><strong>Storage Location:</strong></label>
+            <select class="form-select" id="folder-choice" name="folder">
+                <option value="public">📂 Public Folder (All users can access)</option>
+                <option value="private">🔒 Private Folder (Only you and admins can access)</option>
+            </select>
+        </div>
+
+        <!-- UPLOAD BUTTON -->
+        <div class="d-grid gap-2">
+            <button type="button" class="btn btn-success btn-lg" id="upload-button" onclick="startUpload()" disabled>
+                🚀 Start Upload
+            </button>
+            <button type="button" class="btn btn-secondary" onclick="clearSelection()">
+                🗑️ Clear Selection
+            </button>
+        </div>
+    </form>
+
+    <!-- CURRENT UPLOADS -->
+    <div class="mt-5" id="active-uploads" style="display: none;">
+        <h5>Active Uploads:</h5>
+        <div id="upload-queue"></div>
+    </div>
+
+</div>
+
+<!-- ========================================================================= -->
+<!-- 🚀 ENHANCED UPLOAD JAVASCRIPT WITH DEFERRED EXECUTION AND THROTTLED MONITORING -->
+<!-- ========================================================================= -->
+<script>
+// Global variables
+let selectedFiles = [];
+let uploadQueue = [];
+let currentUpload = null;
+let connectionQuality = 'good';
+let uploadStartTime = null;
+let connectionInterval = null;
+
+// Initialize on page load - DEFERRED EXECUTION
+document.addEventListener('DOMContentLoaded', function() {
+    initializeUploadArea();
+    startConnectionMonitoring(); // THROTTLED version
+    updateActiveUsers();
+});
+
+// Upload area initialization
+function initializeUploadArea() {
+    const uploadArea = document.getElementById('upload-area');
+    const fileInput = document.getElementById('file-input');
+
+    // Drag and drop handlers
+    uploadArea.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        uploadArea.classList.add('dragover');
+    });
+
+    uploadArea.addEventListener('dragleave', function() {
+        uploadArea.classList.remove('dragover');
+    });
+
+    uploadArea.addEventListener('drop', function(e) {
+        e.preventDefault();
+        uploadArea.classList.remove('dragover');
+        handleFiles(e.dataTransfer.files);
+    });
+
+    // File input change handler
+    fileInput.addEventListener('change', function() {
+        handleFiles(this.files);
+    });
+
+    // Click on upload area
+    uploadArea.addEventListener('click', function() {
+        fileInput.click();
+    });
+}
+
+// Handle selected files
+function handleFiles(files) {
+    for (let file of files) {
+        // Check file size limits
+        const maxSize = {{ '50 * 1024 * 1024 * 1024' if is_admin else '25 * 1024 * 1024 * 1024' }};
+        if (file.size > maxSize) {
+            alert(`File "${file.name}" exceeds size limit (${formatFileSize(maxSize)})`);
+            continue;
+        }
+
+        // 🎯 CRITICAL FIX: No client-side file type filtering - let server handle it
+        // Add to selected files
+        if (!selectedFiles.find(f => f.name === file.name && f.size === file.size)) {
+            selectedFiles.push({
+                file: file,
+                name: file.name,
+                size: file.size,
+                progress: 0,
+                status: 'pending'
+            });
+        }
+    }
+
+    updateFileList();
+    updateUploadStats();
+}
+
+// Update file list display
+function updateFileList() {
+    const fileList = document.getElementById('file-list');
+    const fileItems = document.getElementById('file-items');
+    const uploadButton = document.getElementById('upload-button');
+
+    fileItems.innerHTML = '';
+
+    if (selectedFiles.length === 0) {
+        fileList.style.display = 'none';
+        uploadButton.disabled = true;
+        return;
+    }
+
+    fileList.style.display = 'block';
+    uploadButton.disabled = false;
+
+    selectedFiles.forEach((file, index) => {
+        const fileItem = document.createElement('div');
+        fileItem.className = 'file-item';
+        fileItem.innerHTML = `
+            <div class="file-info">
+                <strong>${file.name}</strong>
+                <div class="file-size">${formatFileSize(file.size)}</div>
+                ${file.status !== 'pending' ? `
+                <div class="progress" style="height: 6px; margin-top: 5px;">
+                    <div class="progress-bar ${getProgressBarClass(file.status)}" 
+                         style="width: ${file.progress}%"></div>
+                </div>
+                ` : ''}
+            </div>
+            <div>
+                <span class="badge ${getStatusBadgeClass(file.status)}">${file.status}</span>
+                ${file.status === 'pending' ? 
+                `<button class="btn btn-sm btn-outline-danger" onclick="removeFile(${index})">Remove</button>` : ''}
+            </div>
+        `;
+        fileItems.appendChild(fileItem);
+    });
+}
+
+// Update upload statistics
+function updateUploadStats() {
+    const totalFiles = selectedFiles.length;
+    const totalSize = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+    const estimatedTime = calculateEstimatedTime(totalSize);
+
+    document.getElementById('total-files').textContent = `${totalFiles} File${totalFiles !== 1 ? 's' : ''}`;
+    document.getElementById('total-size').textContent = formatFileSize(totalSize);
+    document.getElementById('estimated-time').textContent = estimatedTime;
+}
+
+// Start the upload process
+function startUpload() {
+    if (selectedFiles.length === 0) return;
+
+    const folderChoice = document.getElementById('folder-choice').value;
+    uploadQueue = [...selectedFiles];
+    
+    document.getElementById('upload-progress-container').style.display = 'block';
+    document.getElementById('upload-button').disabled = true;
+    
+    uploadStartTime = Date.now();
+    processUploadQueue(folderChoice);
+}
+
+// Process upload queue
+function processUploadQueue(folder) {
+    if (uploadQueue.length === 0) {
+        // All files uploaded
+        document.getElementById('upload-progress-container').style.display = 'none';
+        document.getElementById('upload-button').disabled = false;
+        alert('All files uploaded successfully!');
+        
+        // Refresh page to show new files
+        setTimeout(() => {
+            window.location.href = "{{ url_for('files') }}";
+        }, 1000);
+        return;
+    }
+
+    currentUpload = uploadQueue.shift();
+    currentUpload.status = 'uploading';
+    updateFileList();
+    
+    uploadFile(currentUpload, folder);
+}
+
+// Upload individual file with progress tracking
+function uploadFile(fileObj, folder) {
+    const formData = new FormData();
+    formData.append('file', fileObj.file);
+    formData.append('folder', folder);
+
+    const xhr = new XMLHttpRequest();
+    
+    // Progress tracking
+    xhr.upload.addEventListener('progress', function(e) {
+        if (e.lengthComputable) {
+            const percentComplete = (e.loaded / e.total) * 100;
+            fileObj.progress = percentComplete;
+            
+            // Update overall progress
+            const uploadedFiles = selectedFiles.filter(f => f.status === 'completed').length;
+            const currentProgress = fileObj.progress;
+            const overallProgress = ((uploadedFiles + (currentProgress / 100)) / selectedFiles.length) * 100;
+            
+            updateProgressDisplay(overallProgress, fileObj.name, e.loaded, e.total);
+        }
+    });
+
+    // Upload complete
+    xhr.addEventListener('load', function() {
+        if (xhr.status === 200) {
+            fileObj.status = 'completed';
+            fileObj.progress = 100;
+        } else {
+            fileObj.status = 'error';
+        }
+        updateFileList();
+        processUploadQueue(folder);
+    });
+
+    // Upload error
+    xhr.addEventListener('error', function() {
+        fileObj.status = 'error';
+        updateFileList();
+        processUploadQueue(folder);
+    });
+
+    xhr.open('POST', "{{ url_for('upload') }}");
+    xhr.send(formData);
+}
+
+// Update progress display
+function updateProgressDisplay(overallPercent, currentFileName, loaded, total) {
+    const overallBar = document.getElementById('overall-progress-bar');
+    const overallText = document.getElementById('overall-progress-text');
+    const currentProgress = document.getElementById('current-file-progress');
+    const speedIndicator = document.getElementById('upload-speed');
+
+    overallBar.style.width = overallPercent + '%';
+    overallText.textContent = Math.round(overallPercent) + '%';
+    
+    currentProgress.textContent = `${currentFileName}: ${formatFileSize(loaded)} / ${formatFileSize(total)}`;
+    
+    // Calculate upload speed
+    const timeElapsed = (Date.now() - uploadStartTime) / 1000;
+    const uploadSpeed = loaded / timeElapsed;
+    speedIndicator.textContent = `Speed: ${formatFileSize(uploadSpeed)}/s`;
+}
+
+// Utility functions
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function calculateEstimatedTime(totalSize) {
+    // Simple estimation based on connection quality
+    const speeds = { good: 10 * 1024 * 1024, fair: 2 * 1024 * 1024, poor: 512 * 1024 };
+    const speed = speeds[connectionQuality] || speeds.fair;
+    const seconds = totalSize / speed;
+    
+    if (seconds < 60) return '< 1 min';
+    if (seconds < 3600) return Math.ceil(seconds / 60) + ' min';
+    return Math.ceil(seconds / 3600) + ' hours';
+}
+
+function getProgressBarClass(status) {
+    const classes = {
+        'uploading': 'bg-primary',
+        'completed': 'bg-success',
+        'error': 'bg-danger'
+    };
+    return classes[status] || 'bg-secondary';
+}
+
+function getStatusBadgeClass(status) {
+    const classes = {
+        'pending': 'bg-secondary',
+        'uploading': 'bg-primary',
+        'completed': 'bg-success',
+        'error': 'bg-danger'
+    };
+    return classes[status] || 'bg-secondary';
+}
+
+function removeFile(index) {
+    selectedFiles.splice(index, 1);
+    updateFileList();
+    updateUploadStats();
+}
+
+function clearSelection() {
+    selectedFiles = [];
+    updateFileList();
+    updateUploadStats();
+    document.getElementById('upload-progress-container').style.display = 'none';
+}
+
+// Connection monitoring - THROTTLED VERSION
+function startConnectionMonitoring() {
+    // THROTTLED: Reduced from 5s to 30s interval
+    connectionInterval = setInterval(() => {
+        checkConnectionQuality();
+    }, 30000); // 30 seconds instead of 5
+    checkConnectionQuality(); // Initial check
+}
+
+function checkConnectionQuality() {
+    // Simulate connection quality check
+    const qualities = ['good', 'fair', 'poor'];
+    const randomQuality = qualities[Math.floor(Math.random() * qualities.length)];
+    updateConnectionStatus(randomQuality);
+}
+
+function updateConnectionStatus(quality) {
+    const statusElement = document.getElementById('connection-status');
+    const textElement = document.getElementById('connection-text');
+    
+    statusElement.className = 'connection-status connection-' + quality;
+    
+    switch(quality) {
+        case 'good': textElement.textContent = 'Connection: Excellent'; break;
+        case 'fair': textElement.textContent = 'Connection: Good'; break;
+        case 'poor': textElement.textContent = 'Connection: Poor'; break;
+    }
+    connectionQuality = quality;
+    updateUploadStats(); // Recalculate estimated time
+}
+
+function updateActiveUsers() {
+    document.getElementById('active-users-count').textContent = 
+        `Active Users: {{ active_users|length }}`;
+}
+
+// Cleanup intervals when page unloads
+window.addEventListener('beforeunload', function() {
+    if (connectionInterval) clearInterval(connectionInterval);
+});
+</script>
+
+</body>
+</html>

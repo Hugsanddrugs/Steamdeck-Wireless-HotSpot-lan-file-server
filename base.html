@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}File Server{% endblock %}</title>
+    <!-- LOCAL CSS - No CDN dependency -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/minimal.css') }}">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f8f9fa; }
+        header { margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid #dee2e6; }
+        nav a { margin-right: 15px; text-decoration: none; padding: 5px 10px; border-radius: 3px; }
+        nav a:hover { background: #e9ecef; }
+        .flash { padding: 10px; margin-bottom: 15px; border-radius: 5px; background: #e2e3e5; }
+        .flash-success { background: #d4edda; color: #155724; }
+        .flash-error { background: #f8d7da; color: #721c24; }
+        .flash-warning { background: #fff3cd; color: #856404; }
+        .connection-header {
+            background: #e7f3ff;
+            padding: 8px 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            font-size: 0.9em;
+        }
+        .speed-indicator {
+            font-size: 0.8em;
+            color: #6c757d;
+            margin-left: 10px;
+        }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- Connection Status Header -->
+    <div class="connection-header">
+        <strong>Steam Deck File Server</strong>
+        <span id="global-connection-status"> | Connection: Good</span>
+        <span id="global-transfer-speed" class="speed-indicator"></span>
+        {% if session.get('logged_in') %}
+        <span style="float: right;">
+            Active Users: <strong id="global-user-count">{{ active_users|length if active_users else 0 }}</strong>
+        </span>
+        {% endif %}
+    </div>
+
+    <header>
+        <h1>Steam Deck File Server</h1>
+        {% if session.get('logged_in') %}
+        <nav>
+            <a href="{{ url_for('home') }}">📤 Upload Files</a>
+            <a href="{{ url_for('files') }}">📁 Manage Files</a>
+            <span style="color: #6c757d; margin-right: 15px;">
+                Logged in as {% if is_admin %}👑 Admin{% else %}👤 User{% endif %}
+            </span>
+            <a href="{{ url_for('logout') }}">🚪 Logout</a>
+        </nav>
+        {% endif %}
+    </header>
+
+    <!-- Flash Messages with Enhanced Styling -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="flash flash-{{ category if category in ['success', 'error', 'warning'] else '' }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+
+    <!-- Global JavaScript for Connection Monitoring - MOVED TO END AND THROTTLED -->
+    <script>
+        // Global connection monitoring - THROTTLED from 10s to 60s
+        function updateGlobalConnectionStatus(quality) {
+            const statusElement = document.getElementById('global-connection-status');
+            const speedElement = document.getElementById('global-transfer-speed');
+            
+            let statusText = 'Connection: ';
+            switch(quality) {
+                case 'good': statusText += 'Excellent'; break;
+                case 'fair': statusText += 'Good'; break;
+                case 'poor': statusText += 'Poor'; break;
+                default: statusText += 'Checking...';
+            }
+            
+            statusElement.textContent = statusText;
+        }
+
+        // THROTTLED: Reduced from 10s to 60s interval
+        let connectionInterval = setInterval(() => {
+            const qualities = ['good', 'fair', 'poor'];
+            const randomQuality = qualities[Math.floor(Math.random() * qualities.length)];
+            updateGlobalConnectionStatus(randomQuality);
+        }, 60000); // 60 seconds instead of 10
+
+        // Cleanup function to stop intervals if needed
+        function stopConnectionMonitoring() {
+            clearInterval(connectionInterval);
+        }
+    </script>
+
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
